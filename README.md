@@ -50,4 +50,4 @@ joins by link, and each win goes on a shared leaderboard.
 
 ## Start here
 
-Status: `CONTRACT.md` is a draft until both founders approve it. Do not start building before that.
+Status: `CONTRACT.md` is approved. Build against it.
