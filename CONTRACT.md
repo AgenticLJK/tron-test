@@ -88,4 +88,4 @@ That means a player could fake a score. This is acceptable for a throwaway test.
 - [ ] Is host-runs-the-game the right model, or should both browsers simulate?
 - [ ] Are 10 ticks per second and a 60 by 40 board right?
 - [ ] Who creates the Supabase project?
-- [ ] Where do we host it?
+- [x] Where do we host it? GitHub Pages, with this repo public.

@@ -45,8 +45,8 @@ joins by link, and each win goes on a shared leaderboard.
 
 - A static page with plain JavaScript and no build step.
 - Supabase Realtime for live sync, and Supabase Postgres for the leaderboard.
-- Hosting: GitHub Pages if the account's plan allows it for a private repo. Otherwise, the founders
-  choose another host or make this repo public.
+- Hosting: GitHub Pages, published from the root of `main`. This repo is public, so everything
+  committed here is visible to everyone.
 
 ## Start here
 
