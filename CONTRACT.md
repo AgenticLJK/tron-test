@@ -1,6 +1,6 @@
 # Contract
 
-**Status:** Draft. Needs approval from Lucas and Bene before either agent starts.
+**Status:** Approved by Lucas and Bene on 2026-10-30. Changes need a pull request approved by both.
 
 This file is the only interface between `game.js` (Lucas's agent) and `net.js` (Bene's agent).
 Do not depend on anything that is not written here.
@@ -83,9 +83,9 @@ The leaderboard counts rows per `winner_name`, highest first.
 Row-level security stays on. The public anon key may read and insert rows, and nothing else.
 That means a player could fake a score. This is acceptable for a throwaway test.
 
-## Open questions for the founders
+## Decisions
 
-- [ ] Is host-runs-the-game the right model, or should both browsers simulate?
-- [ ] Are 10 ticks per second and a 60 by 40 board right?
-- [ ] Who creates the Supabase project?
-- [x] Where do we host it? GitHub Pages, with this repo public.
+- The host's browser runs the game; the guest sends only key presses.
+- 10 ticks per second on a 60 by 40 board.
+- Bene created the Supabase project.
+- Hosting is GitHub Pages, with this repo public.
