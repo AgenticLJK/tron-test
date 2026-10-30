@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070a10">
+  <title>Tron</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="demo" aria-hidden="true"></canvas>
+<main>
+  <section id="home" class="screen">
+    <div class="card">
+      <h1>TRON</h1>
+      <p class="tagline">Two players. One grid. Don't crash.</p>
+
+      <div class="field">
+        <label for="name-input">Your name</label>
+        <input id="name-input" maxlength="16" autocomplete="nickname" placeholder="Player">
+      </div>
+
+      <div class="stack">
+        <button id="create-button" class="primary">Create a room</button>
+        <button id="local-button">Play on this keyboard</button>
+      </div>
+
+      <div class="divider">or join a friend</div>
+
+      <div class="row">
+        <input id="room-input" maxlength="6" autocomplete="off" spellcheck="false" placeholder="ROOM" aria-label="Room code">
+        <button id="join-button">Join</button>
+      </div>
+
+      <p id="home-note" class="note" role="status"></p>
+
+      <div id="leaderboard" class="leaderboard" hidden>
+        <h2>Leaderboard</h2>
+        <ol id="leaderboard-list"></ol>
+      </div>
+    </div>
+  </section>
+
+  <section id="lobby" class="screen" hidden>
+    <div class="card">
+      <h2>Your room is ready</h2>
+      <p class="tagline">Send this link to your opponent.</p>
+      <div id="room-code" class="code"></div>
+      <div class="stack">
+        <button id="copy-button" class="primary">Copy invite link</button>
+        <button id="lobby-leave-button">Leave</button>
+      </div>
+      <div class="waiting"><span class="pulse"></span>Waiting for a player to join…</div>
+    </div>
+  </section>
+
+  <section id="play" class="screen" hidden>
+    <div class="hud">
+      <div class="player"><span class="dot host"></span><span id="host-name">Teal</span></div>
+      <div class="score" aria-label="Score"><span id="score-host">0</span><span class="sep">:</span><span id="score-guest">0</span></div>
+      <div class="player right"><span id="guest-name">Coral</span><span class="dot guest"></span></div>
+    </div>
+    <div id="arena" class="arena">
+      <canvas id="board" aria-label="Game board"></canvas>
+      <div id="overlay" class="overlay" hidden>
+        <strong id="overlay-title" aria-live="polite"></strong>
+        <div class="actions">
+          <button id="again-button" class="primary">Play again</button>
+          <button id="exit-button">Back to menu</button>
+        </div>
+      </div>
+    </div>
+    <div class="hint">
+      <span id="controls-hint"></span>
+      <button id="leave-button" class="small">Leave game</button>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+  import { createGame, step, draw } from "./game.js";
+
+  const TICK_MS = 100;
+  const COUNT_MS = 650;
+  const RESULT_DELAY_MS = 650;
+  const CRASH_MS = 800;
+  const KEYS = {
+    ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+    KeyW: "up", KeyS: "down", KeyA: "left", KeyD: "right",
+  };
+  const OPPOSITE = { up: "down", down: "up", left: "right", right: "left" };
+
+  const $ = (id) => document.getElementById(id);
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // net.js is built separately, so local play has to work without it.
+  let net = null;
+  try {
+    net = await import("./net.js");
+  } catch {
+    net = null;
+  }
+
+  let mode = "idle";            // "idle" | "local" | "host" | "guest"
+  let current = createGame();
+  let previous = current;
+  let stateAt = 0;
+  let timers = [];
+  let queues = { host: [], guest: [] };
+  let score = { host: 0, guest: 0 };
+  let names = { host: "Teal", guest: "Coral" };
+  let roomCode = null;
+  let resultShown = false;
+  let crashAt = 0;
+  let demo = null;
+  let demoStateAt = 0;
+  let demoPrevious = null;
+  let demoResetAt = 0;
+
+  function show(screen) {
+    for (const id of ["home", "lobby", "play"]) $(id).hidden = id !== screen;
+  }
+
+  function setNote(message, isError = false) {
+    $("home-note").textContent = message;
+    $("home-note").classList.toggle("error", isError);
+  }
+
+  function setOverlay(title, { actions = false, tone = "" } = {}) {
+    const heading = $("overlay-title");
+    $("overlay").hidden = title === null;
+    heading.textContent = title ?? "";
+    heading.className = tone;
+    heading.style.animation = "none";
+    void heading.offsetWidth;
+    heading.style.animation = "";
+    $("again-button").hidden = !actions || mode === "guest";
+    $("exit-button").hidden = !actions;
+  }
+
+  function playerName() {
+    return $("name-input").value.trim() || "Player";
+  }
+
+  function saveName() {
+    try { localStorage.setItem("tron-name", playerName()); } catch {}
+  }
+
+  function clearTimers() {
+    timers.forEach(clearTimeout);
+    timers.forEach(clearInterval);
+    timers = [];
+  }
+
+  function setState(next) {
+    previous = next.tick === 0 ? next : current;
+    current = next;
+    stateAt = performance.now();
+    if (next.status === "finished") crashAt = stateAt;
+  }
+
+  function updateHud() {
+    $("host-name").textContent = names.host;
+    $("guest-name").textContent = names.guest;
+    $("score-host").textContent = score.host;
+    $("score-guest").textContent = score.guest;
+  }
+
+  function resultTitle(winner) {
+    if (winner === "draw") return "Draw";
+    if (mode === "local") return `${names[winner]} wins`;
+    return winner === mode ? "You win" : "You lose";
+  }
+
+  function showResult(winner) {
+    if (resultShown) return;
+    resultShown = true;
+    if (winner !== "draw") score[winner] += 1;
+    updateHud();
+    setOverlay(resultTitle(winner), { actions: true, tone: winner === "draw" ? "" : winner });
+    if (mode === "guest") $("overlay-title").textContent += " · waiting for host";
+  }
+
+  function revealResult(winner) {
+    timers.push(setTimeout(() => showResult(winner), reducedMotion ? 0 : RESULT_DELAY_MS));
+  }
+
+  function publish(state) {
+    if (mode === "host") net.sendState(state);
+  }
+
+  function runTick() {
+    const next = step(current, {
+      host: queues.host.shift() ?? null,
+      guest: queues.guest.shift() ?? null,
+    });
+    setState(next);
+    publish(next);
+    if (next.status !== "finished") return;
+    clearTimers();
+    if (mode === "host" && next.winner !== "draw") {
+      const winnerName = names[next.winner];
+      const loserName = names[next.winner === "host" ? "guest" : "host"];
+      net.recordMatch({ roomCode, winnerName, loserName, ticks: next.tick }).catch(() => {});
+    }
+    revealResult(next.winner);
+  }
+
+  function startRound() {
+    clearTimers();
+    resultShown = false;
+    queues = { host: [], guest: [] };
+    setState(createGame());
+    publish(current);
+    show("play");
+
+    const counts = ["3", "2", "1"];
+    const count = (index) => {
+      if (index === counts.length) {
+        setOverlay(null);
+        setState({ ...current, status: "running", tick: 0 });
+        publish(current);
+        timers.push(setInterval(runTick, TICK_MS));
+        return;
+      }
+      setOverlay(counts[index]);
+      timers.push(setTimeout(() => count(index + 1), COUNT_MS));
+    };
+    count(0);
+  }
+
+  function enqueue(side, dir) {
+    const queue = queues[side];
+    const last = queue.at(-1) ?? current.players[side].dir;
+    if (queue.length >= 2 || dir === last || dir === OPPOSITE[last]) return;
+    queue.push(dir);
+  }
+
+  function steer(dir, key) {
+    if (mode === "guest") {
+      net.sendInput(dir);
+    } else if (mode === "host") {
+      enqueue("host", dir);
+    } else if (mode === "local") {
+      enqueue(key?.startsWith("Arrow") ? "guest" : "host", dir);
+    }
+  }
+
+  function goHome() {
+    clearTimers();
+    mode = "idle";
+    roomCode = null;
+    setOverlay(null);
+    show("home");
+    refreshLeaderboard();
+  }
+
+  async function refreshLeaderboard() {
+    if (!net) return;
+    try {
+      const rows = await net.getLeaderboard();
+      $("leaderboard").hidden = rows.length === 0;
+      $("leaderboard-list").replaceChildren(...rows.slice(0, 5).map(({ player_name, wins }) => {
+        const item = document.createElement("li");
+        const name = document.createElement("span");
+        const count = document.createElement("span");
+        name.textContent = player_name;
+        count.textContent = wins;
+        item.append(name, count);
+        return item;
+      }));
+    } catch {
+      $("leaderboard").hidden = true;
+    }
+  }
+
+  function startLocal() {
+    mode = "local";
+    names = { host: "Teal", guest: "Coral" };
+    score = { host: 0, guest: 0 };
+    $("controls-hint").textContent = "Teal: W A S D · Coral: arrow keys";
+    updateHud();
+    startRound();
+  }
+
+  async function createOnline() {
+    saveName();
+    $("create-button").disabled = true;
+    try {
+      const room = await net.createRoom(playerName());
+      mode = "host";
+      roomCode = room.roomCode;
+      names = { host: playerName(), guest: "Waiting…" };
+      score = { host: 0, guest: 0 };
+      $("room-code").textContent = room.roomCode;
+      $("copy-button").dataset.url = room.joinUrl;
+      $("controls-hint").textContent = "Arrow keys, W A S D, or swipe";
+      show("lobby");
+    } catch {
+      setNote("Could not create a room. Please try again.", true);
+    } finally {
+      $("create-button").disabled = false;
+    }
+  }
+
+  async function joinOnline() {
+    const code = $("room-input").value.trim().toUpperCase();
+    if (!/^[A-Z]{6}$/.test(code)) {
+      setNote("Room codes are 6 letters.", true);
+      return;
+    }
+    saveName();
+    $("join-button").disabled = true;
+    try {
+      await net.joinRoom(code, playerName());
+      mode = "guest";
+      roomCode = code;
+      names = { host: "Host", guest: "You" };
+      score = { host: 0, guest: 0 };
+      resultShown = false;
+      setState(createGame());
+      $("controls-hint").textContent = "Arrow keys, W A S D, or swipe";
+      updateHud();
+      show("play");
+      setOverlay("Waiting for host…");
+    } catch {
+      setNote("Could not join that room. Check the code and try again.", true);
+    } finally {
+      $("join-button").disabled = false;
+    }
+  }
+
+  function bindNet() {
+    net.onPlayerJoined((name) => {
+      if (mode !== "host") return;
+      names.guest = name;
+      updateHud();
+      startRound();
+    });
+    net.onInput((dir) => {
+      if (mode === "host") enqueue("guest", dir);
+    });
+    net.onState((state) => {
+      if (mode !== "guest") return;
+      if (state.status === "waiting") {
+        resultShown = false;
+        setState(state);
+        setOverlay("Get ready");
+      } else if (state.status === "running") {
+        setOverlay(null);
+        setState(state);
+      } else {
+        setState(state);
+        revealResult(state.winner);
+      }
+    });
+    net.onPlayerLeft(() => {
+      if (mode !== "host" && mode !== "guest") return;
+      clearTimers();
+      show("play");
+      setOverlay("Opponent left", { actions: true });
+      $("again-button").hidden = true;
+    });
+  }
+
+  function pickDemoTurn(state, side) {
+    const player = state.players[side];
+    const blocked = (dir) => {
+      const test = step({ ...state, status: "running" }, { [side]: dir });
+      return !test.players[side].alive;
+    };
+    if (!blocked(player.dir) && Math.random() > 0.04) return null;
+    const options = ["up", "down", "left", "right"]
+      .filter((dir) => dir !== OPPOSITE[player.dir] && dir !== player.dir && !blocked(dir));
+    return options[Math.floor(Math.random() * options.length)] ?? null;
+  }
+
+  function renderDemo(now) {
+    if (reducedMotion) {
+      demo ??= { ...createGame(), status: "running" };
+      draw(demo, $("demo"));
+      return;
+    }
+    if (!demo || (demo.status === "finished" && now > demoResetAt)) {
+      demo = { ...createGame(), status: "running" };
+      demoPrevious = demo;
+      demoStateAt = now;
+    }
+    if (demo.status === "running" && now - demoStateAt >= TICK_MS) {
+      demoPrevious = demo;
+      demo = step(demo, { host: pickDemoTurn(demo, "host"), guest: pickDemoTurn(demo, "guest") });
+      demoStateAt = now;
+      if (demo.status === "finished") demoResetAt = now + 1200;
+    }
+    const t = Math.min((now - demoStateAt) / TICK_MS, 1);
+    const crash = demo.status === "finished" ? Math.min((now - demoStateAt) / CRASH_MS, 1) : 1;
+    draw(demo, $("demo"), { from: demoPrevious, t, crash });
+  }
+
+  function render(now) {
+    const t = reducedMotion ? 1 : Math.min((now - stateAt) / TICK_MS, 1);
+    const crash = reducedMotion ? 1 : Math.min((now - crashAt) / CRASH_MS, 1);
+    const playing = !$("play").hidden;
+    $("demo").hidden = playing;
+    if (playing) draw(current, $("board"), { from: previous, t, crash });
+    else renderDemo(now);
+    requestAnimationFrame(render);
+  }
+
+  addEventListener("keydown", (event) => {
+    const dir = KEYS[event.code];
+    if (!dir || mode === "idle" || $("play").hidden) return;
+    event.preventDefault();
+    steer(dir, event.code);
+  });
+
+  let touchStart = null;
+  $("arena").addEventListener("pointerdown", (event) => {
+    touchStart = [event.clientX, event.clientY];
+  });
+  $("arena").addEventListener("pointerup", (event) => {
+    if (!touchStart) return;
+    const dx = event.clientX - touchStart[0];
+    const dy = event.clientY - touchStart[1];
+    touchStart = null;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
+    steer(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"));
+  });
+
+  $("create-button").addEventListener("click", createOnline);
+  $("join-button").addEventListener("click", joinOnline);
+  $("local-button").addEventListener("click", startLocal);
+  $("again-button").addEventListener("click", startRound);
+  $("exit-button").addEventListener("click", goHome);
+  $("leave-button").addEventListener("click", goHome);
+  $("lobby-leave-button").addEventListener("click", goHome);
+  $("room-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") joinOnline();
+  });
+  $("copy-button").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      await navigator.clipboard.writeText(button.dataset.url);
+      button.textContent = "Copied";
+    } catch {
+      button.textContent = button.dataset.url;
+    }
+  });
+
+  try { $("name-input").value = localStorage.getItem("tron-name") ?? ""; } catch {}
+
+  const invited = new URLSearchParams(location.search).get("room");
+  if (invited) {
+    $("room-input").value = invited.toUpperCase();
+    setNote("You've been invited. Enter your name and press Join.");
+  }
+
+  if (net) {
+    bindNet();
+    refreshLeaderboard();
+  } else {
+    $("create-button").disabled = true;
+    $("join-button").disabled = true;
+    setNote("Online play arrives when net.js is merged. Keyboard play works now.");
+  }
+
+  requestAnimationFrame(render);
+</script>
+</body>
+</html>
