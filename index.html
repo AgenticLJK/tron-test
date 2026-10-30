@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<canvas id="demo" aria-hidden="true"></canvas>
 <main>
   <section id="home" class="screen">
     <div class="card">
@@ -57,7 +58,7 @@
   <section id="play" class="screen" hidden>
     <div class="hud">
       <div class="player"><span class="dot host"></span><span id="host-name">Teal</span></div>
-      <div id="score" class="score">0 – 0</div>
+      <div class="score" aria-label="Score"><span id="score-host">0</span><span class="sep">:</span><span id="score-guest">0</span></div>
       <div class="player right"><span id="guest-name">Coral</span><span class="dot guest"></span></div>
     </div>
     <div id="arena" class="arena">
@@ -82,6 +83,8 @@
 
   const TICK_MS = 100;
   const COUNT_MS = 650;
+  const RESULT_DELAY_MS = 650;
+  const CRASH_MS = 800;
   const KEYS = {
     ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
     KeyW: "up", KeyS: "down", KeyA: "left", KeyD: "right",
@@ -109,6 +112,11 @@
   let names = { host: "Teal", guest: "Coral" };
   let roomCode = null;
   let resultShown = false;
+  let crashAt = 0;
+  let demo = null;
+  let demoStateAt = 0;
+  let demoPrevious = null;
+  let demoResetAt = 0;
 
   function show(screen) {
     for (const id of ["home", "lobby", "play"]) $(id).hidden = id !== screen;
@@ -119,9 +127,14 @@
     $("home-note").classList.toggle("error", isError);
   }
 
-  function setOverlay(title, { actions = false } = {}) {
+  function setOverlay(title, { actions = false, tone = "" } = {}) {
+    const heading = $("overlay-title");
     $("overlay").hidden = title === null;
-    $("overlay-title").textContent = title ?? "";
+    heading.textContent = title ?? "";
+    heading.className = tone;
+    heading.style.animation = "none";
+    void heading.offsetWidth;
+    heading.style.animation = "";
     $("again-button").hidden = !actions || mode === "guest";
     $("exit-button").hidden = !actions;
   }
@@ -144,12 +157,14 @@
     previous = next.tick === 0 ? next : current;
     current = next;
     stateAt = performance.now();
+    if (next.status === "finished") crashAt = stateAt;
   }
 
   function updateHud() {
     $("host-name").textContent = names.host;
     $("guest-name").textContent = names.guest;
-    $("score").textContent = `${score.host} – ${score.guest}`;
+    $("score-host").textContent = score.host;
+    $("score-guest").textContent = score.guest;
   }
 
   function resultTitle(winner) {
@@ -163,8 +178,12 @@
     resultShown = true;
     if (winner !== "draw") score[winner] += 1;
     updateHud();
-    setOverlay(resultTitle(winner), { actions: true });
+    setOverlay(resultTitle(winner), { actions: true, tone: winner === "draw" ? "" : winner });
     if (mode === "guest") $("overlay-title").textContent += " · waiting for host";
+  }
+
+  function revealResult(winner) {
+    timers.push(setTimeout(() => showResult(winner), reducedMotion ? 0 : RESULT_DELAY_MS));
   }
 
   function publish(state) {
@@ -185,7 +204,7 @@
       const loserName = names[next.winner === "host" ? "guest" : "host"];
       net.recordMatch({ roomCode, winnerName, loserName, ticks: next.tick }).catch(() => {});
     }
-    showResult(next.winner);
+    revealResult(next.winner);
   }
 
   function startRound() {
@@ -333,7 +352,7 @@
         setState(state);
       } else {
         setState(state);
-        showResult(state.winner);
+        revealResult(state.winner);
       }
     });
     net.onPlayerLeft(() => {
@@ -345,9 +364,47 @@
     });
   }
 
+  function pickDemoTurn(state, side) {
+    const player = state.players[side];
+    const blocked = (dir) => {
+      const test = step({ ...state, status: "running" }, { [side]: dir });
+      return !test.players[side].alive;
+    };
+    if (!blocked(player.dir) && Math.random() > 0.04) return null;
+    const options = ["up", "down", "left", "right"]
+      .filter((dir) => dir !== OPPOSITE[player.dir] && dir !== player.dir && !blocked(dir));
+    return options[Math.floor(Math.random() * options.length)] ?? null;
+  }
+
+  function renderDemo(now) {
+    if (reducedMotion) {
+      demo ??= { ...createGame(), status: "running" };
+      draw(demo, $("demo"));
+      return;
+    }
+    if (!demo || (demo.status === "finished" && now > demoResetAt)) {
+      demo = { ...createGame(), status: "running" };
+      demoPrevious = demo;
+      demoStateAt = now;
+    }
+    if (demo.status === "running" && now - demoStateAt >= TICK_MS) {
+      demoPrevious = demo;
+      demo = step(demo, { host: pickDemoTurn(demo, "host"), guest: pickDemoTurn(demo, "guest") });
+      demoStateAt = now;
+      if (demo.status === "finished") demoResetAt = now + 1200;
+    }
+    const t = Math.min((now - demoStateAt) / TICK_MS, 1);
+    const crash = demo.status === "finished" ? Math.min((now - demoStateAt) / CRASH_MS, 1) : 1;
+    draw(demo, $("demo"), { from: demoPrevious, t, crash });
+  }
+
   function render(now) {
     const t = reducedMotion ? 1 : Math.min((now - stateAt) / TICK_MS, 1);
-    if (!$("play").hidden) draw(current, $("board"), { from: previous, t });
+    const crash = reducedMotion ? 1 : Math.min((now - crashAt) / CRASH_MS, 1);
+    const playing = !$("play").hidden;
+    $("demo").hidden = playing;
+    if (playing) draw(current, $("board"), { from: previous, t, crash });
+    else renderDemo(now);
     requestAnimationFrame(render);
   }
 
