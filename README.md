@@ -26,7 +26,7 @@ joins by link, and each win goes on a shared leaderboard.
 
 | Owner | Scope | Files |
 |---|---|---|
-| Lucas's agent | Game rules, drawing, controls, win logic | `game.js`, `index.html`, `style.css` |
+| Lucas's agent | Game rules, drawing, controls, win logic | `game.js`, `arena3d.js`, `index.html`, `style.css` |
 | Bene's agent | Rooms, live sync, leaderboard, database | `net.js`, `config.js`, `supabase/` |
 | Both founders | The contract | `CONTRACT.md` |
 
