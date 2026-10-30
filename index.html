@@ -7,6 +7,14 @@
   <title>Tron</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
 </head>
 <body>
 <canvas id="demo" aria-hidden="true"></canvas>
@@ -100,6 +108,21 @@
     net = await import("./net.js");
   } catch {
     net = null;
+  }
+
+  // 3D needs WebGL2 and the Three.js download, so the 2D drawing stays as the fallback.
+  let paintBoard = (state, motion) => draw(state, $("board"), motion);
+  let paintDemo = (state, motion) => draw(state, $("demo"), motion);
+  if (document.createElement("canvas").getContext("webgl2")) {
+    try {
+      const { createArena } = await import("./arena3d.js");
+      const board = createArena($("board"));
+      const background = createArena($("demo"), { orbit: !reducedMotion });
+      paintBoard = (state, motion) => board.render(state, motion);
+      paintDemo = (state, motion) => background.render(state, motion);
+    } catch (error) {
+      console.warn("Using 2D view:", error);
+    }
   }
 
   let mode = "idle";            // "idle" | "local" | "host" | "guest"
@@ -379,7 +402,7 @@
   function renderDemo(now) {
     if (reducedMotion) {
       demo ??= { ...createGame(), status: "running" };
-      draw(demo, $("demo"));
+      paintDemo(demo, {});
       return;
     }
     if (!demo || (demo.status === "finished" && now > demoResetAt)) {
@@ -395,7 +418,7 @@
     }
     const t = Math.min((now - demoStateAt) / TICK_MS, 1);
     const crash = demo.status === "finished" ? Math.min((now - demoStateAt) / CRASH_MS, 1) : 1;
-    draw(demo, $("demo"), { from: demoPrevious, t, crash });
+    paintDemo(demo, { from: demoPrevious, t, crash });
   }
 
   function render(now) {
@@ -403,7 +426,7 @@
     const crash = reducedMotion ? 1 : Math.min((now - crashAt) / CRASH_MS, 1);
     const playing = !$("play").hidden;
     $("demo").hidden = playing;
-    if (playing) draw(current, $("board"), { from: previous, t, crash });
+    if (playing) paintBoard(current, { from: previous, t, crash });
     else renderDemo(now);
     requestAnimationFrame(render);
   }
